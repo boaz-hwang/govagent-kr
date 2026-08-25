@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!agent.py
+!law_store.py
+!requirements.lock

@@ -1,0 +1,27 @@
+services:
+  default:
+    image: ${GOVAGENT_SUT_IMAGE:?Set GOVAGENT_SUT_IMAGE to the frozen sha256 image ID}
+    x-local: true
+    init: true
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 1.0
+    stop_grace_period: 2s
+    environment:
+      GOVAGENT_FIXTURE_ROOT: /opt/law
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - type: bind
+        source: ./fixtures/local-contract-decree
+        target: /opt/law
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=64m,mode=1777
+      - /var/tmp:rw,nosuid,exec,size=256m,mode=1777

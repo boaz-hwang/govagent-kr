@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "govagent-kr-temporal-citation"
+version = "0.1.0"
+description = "A small, reproducible temporal-citation evaluation profile for Korean law agents"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = ["Private :: Do Not Upload"]
+dependencies = [
+  "lxml>=5.4,<7",
+  "pydantic>=2.11,<3",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+inspect = [
+  "inspect-ai==0.3.260",
+  "openai==3.3.1",
+]
+dev = [
+  "hypothesis>=6.135,<7",
+  "pytest>=8.4,<9",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12,<0.13",
+]
+
+[project.scripts]
+govagent-build-fixtures = "govagent_kr.cli:build_fixtures_main"
+govagent-build-dataset = "govagent_kr.cli:build_dataset_main"
+govagent-validate = "govagent_kr.cli:validate_main"
+govagent-diagnostics = "govagent_kr.cli:diagnostics_main"
+govagent-grade = "govagent_kr.cli:grade_main"
+govagent-review = "govagent_kr.cli:review_main"
+govagent-gold-review = "govagent_kr.gold_review:main"
+govagent-freeze = "govagent_kr.freeze:main"
+govagent-verify-freeze = "govagent_kr.freeze:verify_main"
+govagent-quality = "govagent_kr.quality:main"
+govagent-report = "govagent_kr.report:main"
+govagent-final-report = "govagent_kr.report:final_main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/govagent_kr"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

@@ -1,0 +1,46 @@
+profile_id: govagent-kr-temporal-citation
+profile_version: 0.1.0
+status: development
+instrument:
+  id: KR-LAW-010098
+  official_law_id: "010098"
+  name: 지방자치단체를 당사자로 하는 계약에 관한 법률 시행령
+scope:
+  case_families: 5
+  items: 20
+  trials_per_item: 3
+  timezone: Asia/Seoul
+canonicalization: quote-c14n/v1
+fixture_parser: law-go-kr-xml/v1.1
+submission:
+  statuses:
+    - answered
+    - insufficient_facts
+    - no_applicable_provision
+  conclusions:
+    - affirmative
+    - negative
+    - indeterminate
+  citation_identity:
+    - instrument_id
+    - history_id
+    - provision_locator
+    - exact_passage_hash
+limits:
+  wall_clock_seconds: 180
+  model_requests: 12
+  tool_calls: 24
+  submission_attempts: 1
+  max_submission_bytes: 65536
+sandbox:
+  sut: sandbox_agent_bridge
+  network_mode: none
+  gold_mounted: false
+  provider_web_search: false
+  provider_code_execution: false
+  remote_mcp: false
+readiness:
+  engineering_diagnostics: ready
+  legal_sme_adjudication: pending
+  frontier_run: pending
+  transcript_review: pending

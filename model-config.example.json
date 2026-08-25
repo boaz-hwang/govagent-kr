@@ -1,0 +1,11 @@
+{
+  "generate": {
+    "attempt_timeout": 120,
+    "max_connections": 1,
+    "max_retries": 0,
+    "reasoning_effort": "high",
+    "temperature": 0,
+    "timeout": 120
+  },
+  "model_args": {}
+}

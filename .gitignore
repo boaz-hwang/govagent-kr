@@ -1,0 +1,11 @@
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+reports/runs/
+reports/reviews/
+reports/freezes/
+reports/quality-*.json
+reports/engineering-readiness.json
+reports/engineering-readiness.md

@@ -5,7 +5,7 @@
 - 기준일: 2026-08-25
 - 개발기간: 10영업일
 - 규모: 5 case families, 20 items, 60 frontier-model runs
-- 상태: 검증 전 계획
+- 상태: engineering environment 구현 완료, 법률 전문가 검수·frontier run 전
 - 결과물의 지위: 개발용 evaluation environment
 - 아닌 것: RL 학습환경, 정부 인증, 법률의견, 공공행정 전체 benchmark
 
@@ -30,6 +30,27 @@ MVP의 목적은 제품을 출시하는 것이 아니라 세 가지를 검증하
 ### 한 줄 원칙
 
 > **작아서 모든 사례, gold, grader 판정과 60개 transcript를 사람이 직접 검토할 수 있어야 한다.**
+
+### 현재 구현 결과
+
+2026-08-25 기준으로 사람이 아닌 공학 작업은 구현돼 있다.
+
+| 영역 | 구현 상태 | 분석 사용 조건 |
+| --- | --- | --- |
+| 공식 corpus | 7개 XML·정규화 원문·manifest·SHA-256 동결 | 전문가가 경계·본문·부칙 확인 |
+| task data | 3개 경계, 5 families, 20 items | SME 2인 전수검토와 adjudication |
+| grader | strict JSON, 결론, 4-tuple citation, 기권·오류 분리 | gold 확정 뒤 freeze |
+| 실행 환경 | Inspect Agent Bridge, Docker network none, gold 미마운트 | 고정 provider/model로 smoke |
+| 진단 | fixture oracle 20/20, current-version ablation 9/20 실패 | 모델 성능으로 해석하지 않음 |
+| 증거 흐름 | quality receipt, analysis freeze, blind 1·2차 검토, 최종 report | 실제 60 runs와 사람 검토 필요 |
+
+분석 freeze는 현재 commit·critical artifact set·정확한 `sha256` SUT image와 그 이미지로
+수행한 Docker smoke를 하나의 quality receipt로 묶는다. pending gold, mutable image tag, dirty
+worktree 또는 낡은 quality receipt 중 하나라도 있으면 본실행을 거부한다.
+
+아직 만들지 않은 증거도 명확하다. 현재 gold 20건은 `pending`이고 provider credential이 없어
+frontier 60 runs는 실행하지 않았다. transcript 사람 검토와 `Go / Redesign / Stop` 결정도 없다.
+따라서 구현 완료는 `평가 환경의 공학적 준비`를 뜻하며 평가 결과 완료를 뜻하지 않는다.
 
 ---
 
@@ -129,7 +150,7 @@ gold answer의 연혁만 현재 최신 연혁으로 바꾸는 `current-version a
 - frontier trial: item당 3회, 총 60 runs
 - environment diagnostics: fixture oracle 1개, current-version ablation 1개
 - 실행기: Inspect AI
-- 외부 네트워크: 차단
+- SUT container 외부 네트워크: 차단; Inspect host의 model-provider egress는 별도 allowlist
 
 ### 제외
 
@@ -151,14 +172,17 @@ gold answer의 연혁만 현재 최신 연혁으로 바꾸는 `current-version a
 
 ### 5.1 변경 경계 3개
 
-첫 이틀에 전문가와 함께 실제 시행령 개정 중 다음 조건을 충족하는 경계 3개를 고른다.
+공식 국가법령정보센터 XML과 개정문을 대조해 다음 세 경계를 동결했다.
 
-- 시행 전·후 적용 조문 또는 문구가 명확히 달라진다.
-- 공식 연혁과 부칙으로 정답을 확정할 수 있다.
-- 별도 판례·예규·조례 없이 답할 수 있다.
-- 개인정보 없는 합성 사실관계를 만들 수 있다.
+| 경계 | 직전 / 직후 `lsiSeq` | 평가하는 변화 |
+| --- | --- | --- |
+| 2018-07-24 | `201260` / `204108` | 사회적기업 수의계약과 1인 견적 예외 신설 |
+| 2020-11-03 | `221951` / `222683` | 디지털서비스 신설, 종전 혁신제품 경과조치 |
+| 2025-07-08 | `269761` / `272723` | 특정규격 자재 가격증감 기준 15%→10%와 미완료 계약 적용례 |
 
-적합한 경계 3개를 찾지 못하면 이 법령 선택을 중단하고 다른 단일 법령을 고른다.
+각 원본 XML·정규화 원문·출처·유효기간·SHA-256은 fixture manifest에 보관한다. 이 선정도
+현재는 engineering candidate이며, 법률 전문가 2인의 독립 검토와 adjudication 전에는
+확정 gold로 부르지 않는다.
 
 ### 5.2 Case family 5개
 
@@ -183,6 +207,7 @@ Gold 필드:
 
 ```text
 expected_status
+expected_conclusion
 required_citations[] {
   instrument_id,
   history_id,
@@ -196,6 +221,7 @@ allowed_citations[] {
   exact_passage_hash
 }
 forbidden_history_ids[]
+required_missing_fact_keys[]
 controlling_event
 adjudication_note
 ```
@@ -244,6 +270,7 @@ law.get_supplementary_provisions(history_id)
 ```json
 {
   "status": "answered",
+  "conclusion": "affirmative",
   "selected_provisions": [
     {
       "instrument_id": "...",
@@ -265,9 +292,24 @@ insufficient_facts
 no_applicable_provision
 ```
 
+`conclusion`은 질문에 적힌 명제의 실체적 방향을 나타내는 세 값만 허용한다.
+
+```text
+affirmative
+negative
+indeterminate
+```
+
+`answered`는 `affirmative` 또는 `negative`, `insufficient_facts`는 `indeterminate`,
+`no_applicable_provision`은 `negative`여야 한다. 이 필드를 별도로 채점하지 않으면 정확한
+조문을 붙이고 정반대 결론을 적어도 통과하므로 필수 계약으로 둔다.
+
 `explanation`은 transcript에는 남기지만 core score에는 사용하지 않는다.
 
-provider timeout, tool crash와 budget exhaustion 같은 실행오류는 Agent가 제출하는 status가 아니다. Inspect harness의 `episode_outcome`으로 별도 기록하고 capability 분모에서 분리한다.
+provider timeout과 tool·sandbox crash는 Agent가 제출하는 status가 아니다. Inspect harness의
+`episode_outcome`으로 별도 기록하고 주 capability 분석에서 제외한다. 반면 model/tool budget
+소진과 최종 제출 누락은 SUT가 평가를 회피하지 못하도록 고정 60회 `attempt_success` 분모에서
+실패로 센다.
 
 ### 6.4 실행 제한
 
@@ -287,7 +329,14 @@ score_feedback_during_run: false
 
 gold와 grader metadata는 Agent sandbox 밖에 둔다. clock, corpus, tool response와 budget은 모든 run에서 동일하다.
 
-SUT는 Inspect native in-process agent가 아니라 `sandbox_agent_bridge` container에서 실행한다. container는 `network_mode:none`이고 gold를 mount하지 않는다. hosted model 요청만 Inspect host proxy가 중계하며 host egress는 해당 provider endpoint allowlist로 제한한다. malicious canary로 임의 웹, host filesystem과 gold 접근이 모두 실패하는지 smoke 단계에서 확인한다.
+SUT는 Inspect native in-process agent가 아니라 `sandbox_agent_bridge` container에서 실행한다.
+container는 `network_mode:none`, read-only root filesystem, capability drop 상태이며 gold와 저장소
+root를 mount하지 않는다. hosted model 요청만 Inspect host의 loopback proxy가 중계한다.
+container의 외부 route·gold 경로·공개 fixture mount를 매 episode preflight로 검사한다.
+
+Inspect host 자체의 OS-level provider endpoint allowlist는 repository code만으로 강제하지 못한다.
+기관 환경에서 실행할 때는 별도 egress gateway로 provider endpoint만 허용하고 그 정책 revision을
+freeze receipt 밖의 운영 증거로 보관한다. MVP의 자동 격리 보증 범위는 SUT container까지다.
 
 ---
 
@@ -299,16 +348,22 @@ SUT는 Inspect native in-process agent가 아니라 `sandbox_agent_bridge` conta
 
 1. output schema가 유효하다.
 2. `status`가 gold와 일치한다.
-3. 모든 `required_citations` tuple을 선택했다.
-4. 선택한 모든 citation tuple이 `required_citations` 또는 `allowed_citations`에 속한다.
-5. forbidden history를 선택하지 않았다.
-6. 각 quote의 canonical hash가 같은 tuple에 결합된 `exact_passage_hash`와 일치한다.
+3. `conclusion`이 gold와 일치한다.
+4. 모든 `required_citations` tuple을 선택했다.
+5. 선택한 모든 citation tuple이 `required_citations` 또는 `allowed_citations`에 속한다.
+6. forbidden history를 선택하지 않았다.
+7. 각 quote의 canonical hash가 같은 tuple에 결합된 `exact_passage_hash`와 일치한다.
 
 그 외에는 0이다.
 
 `core_success`는 MVP 분석용 binary metric이다. RL reward로 사용한다고 아직 결정하지 않는다.
 
 grader는 `instrument_id + history_id + provision_locator + canonical passage hash`를 하나의 결합키로 비교한다. 네 필드를 따로 비교하지 않는다. quote 비교는 versioned canonicalization 뒤 수행한다. v0.1은 Unicode NFC, 줄바꿈 LF 통일, 행 끝 공백 제거까지만 허용하고 구두점·단어·숫자는 바꾸지 않는다. 짧은 공통문구나 빈 문자열로 통과하지 못하도록 substring 포함 여부가 아니라 gold tuple에 등록된 전체 passage hash와 비교한다.
+
+공식 XML이 `마목` 하나의 평문 안에 `1)~6)`을 넣는 경우 parser가 원 aggregate passage는
+보존하면서 `#본문`, `#3)`, `#8)` 같은 synthetic sublocator를 추가한다. 이는 공식 조문번호를
+새로 만든 것이 아니라 exact contiguous passage를 과잉인용 없이 가리키는 v0.1 parser
+extension이며 manifest의 parser version에 묶인다.
 
 ### 7.2 보조 지표
 
@@ -358,7 +413,12 @@ frontier SUT는 본실행 전에 다음 manifest로 동결한다.
 - tool contract와 budget
 - Inspect·environment·grader version
 
-5개 item으로 smoke rollout을 먼저 수행한다. transcript를 읽고 task·gold·tool·grader·격리를 수정한 뒤 environment와 grader를 freeze한다.
+5개 item으로 smoke rollout을 먼저 수행한다. transcript를 읽고 task·gold·tool·grader·격리를
+수정한 뒤 environment와 grader를 freeze한다. v0.1의 사람 smoke 검토는 실행 명령과 보관
+artifact를 README에 고정한 운영 게이트이며, analysis freeze가 그 검토 receipt까지 자동
+검증하지는 않는다. 실제 본실행 운영자는 smoke log·blind bundle·검토 CSV·결함 조치 기록을
+freeze 옆에 보관하고 별도 승인해야 한다. 다음 버전에서는 이 receipt를 freeze 필수 입력으로
+결속한다.
 
 freeze 후 environment, gold, tool, prompt contract나 grader가 바뀌면 기존 본실행 60 runs는 분석에서 제외하고 전부 다시 실행한다. 일부 run만 새 버전으로 교체해 합산하지 않는다.
 
@@ -393,17 +453,20 @@ primary_cause: <one label or null>
 SUT_ERROR
 TASK_AMBIGUITY
 GOLD_ERROR
-GRADER_ERROR
 TOOL_OR_ENV_ERROR
 INFRA_ERROR
 ```
+
+`GRADER_ERROR`는 grader를 가린 1·2차 검토와 adjudication에서 직접 붙이지 않는다. 사람 판정이
+고정된 뒤 자동 점수를 공개해 false positive·false negative와 `grader_agrees=false`를
+결정적으로 계산한다.
 
 판정 원칙:
 
 - 모델이 필요한 정보와 도구를 받았는데 잘못 선택했다면 `SUT_ERROR`
 - 질문이 두 가지로 읽히면 `TASK_AMBIGUITY`
 - 전문가 정답이 잘못됐으면 `GOLD_ERROR`
-- transcript상 답은 맞는데 점수가 틀리면 `GRADER_ERROR`
+- transcript상 답은 맞는데 점수가 틀리면 공개 뒤 grader disagreement로 자동 집계
 - tool이 잘못된 자료를 반환했으면 `TOOL_OR_ENV_ERROR`
 - provider timeout 등은 `INFRA_ERROR`
 
@@ -441,7 +504,11 @@ Agent가 스스로 작성한 trace를 원본으로 믿지 않는다. Inspect가 
 
 ### 다음 eval 단계로 진행한다
 
-위 조건에 더해 frontier SUT의 진짜 `SUT_ERROR`가 최소 2개 case families에서 발견되면 다음 단계 검토 대상으로 삼는다. 이 수치는 작은 MVP의 학습신호 탐색용 heuristic이지 모델 품질 또는 통계적 합격선이 아니다.
+위 조건에 더해 60회가 모두 analysis-eligible이고 사람이 environment-valid로 확인했으며,
+`indeterminate` 판정이 하나도 남지 않은 상태에서 frontier SUT의 비혼재 진짜 `SUT_ERROR`가
+최소 2개 case families에서 발견되면 다음 단계 검토 대상으로 삼는다. task·gold·grader·환경
+원인이 함께 붙은 run은 이 신호로 세지 않는다. 이 수치는 작은 MVP의 학습신호 탐색용
+heuristic이지 모델 품질 또는 통계적 합격선이 아니다.
 
 이때도 곧바로 RL을 시작하지 않는다. 실패 유형을 반영한 case family를 20~30개로 늘릴 가치가 생겼다고만 판정한다.
 
@@ -465,36 +532,54 @@ Agent가 스스로 작성한 trace를 원본으로 믿지 않는다. Inspect가 
 ## 10. 산출물
 
 ```text
-govagent-kr/
+gov-agent/
+├── LICENSE
+├── README.md
 ├── profile.yaml
-├── task.py
-├── tools.py
-├── scorer.py
-├── diagnostics.py
+├── model-config.example.json
+├── compose.yaml
+├── compose.frozen.yaml
+├── DATASET_CARD.md
 ├── fixtures/
-│   └── local-contract-decree/<snapshot>/
+│   └── local-contract-decree/<history>/
 ├── data/
 │   ├── cases.jsonl
 │   └── gold.jsonl        # Agent sandbox에서 격리
+├── runtime/
+│   ├── Dockerfile
+│   ├── agent.py
+│   ├── law_store.py
+│   ├── requirements.in
+│   └── requirements.lock
+├── src/govagent_kr/
+│   ├── task.py
+│   ├── law_tools.py
+│   ├── scorer.py
+│   ├── diagnostics.py
+│   ├── gold_review.py
+│   ├── model_config.py
+│   ├── quality.py
+│   ├── freeze.py
+│   ├── review.py
+│   └── report.py
 ├── tests/
-│   ├── grader/
-│   ├── fixture-integrity/
-│   └── replay/
+│   └── test_*.py
 └── reports/
-    ├── transcript-review.csv
-    └── mvp-result.md
+    ├── diagnostics.json
+    ├── quality-receipt.json
+    └── engineering-readiness.{json,md}
 ```
 
 필수 산출물은 여덟 개다.
 
 1. 동결 corpus와 hash manifest
-2. 20개 case와 전문가 gold
+2. 20개 case, 후보 gold와 2인 전문가 검수·adjudication receipt
 3. Inspect task
 4. 네 개의 mock law tools
 5. deterministic grader와 golden tests
 6. fixture oracle과 current-version ablation
-7. 60개 frontier transcript와 전수 root-cause review
-8. `Go / Redesign / Stop` 결과 보고서
+7. 60개 frontier transcript와 전수 root-cause review — 외부 실행·사람 검토 대기
+8. `Go / Redesign / Stop` 결과 보고서 — 7번 증거가 있어야 생성 가능
 
 새 CLI, dashboard, badge, website와 여러 adapter는 만들지 않는다.
 
