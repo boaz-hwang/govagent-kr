@@ -8,7 +8,7 @@ from typing import Any
 
 from .canonical import canonical_json_bytes
 from .constants import DEFAULT_CASES_PATH, DEFAULT_FIXTURE_ROOT, DEFAULT_GOLD_PATH
-from .dataset import build_dataset, dataset_integrity_report, load_gold
+from .dataset import DatasetBuildError, build_dataset, dataset_integrity_report, load_gold
 from .diagnostics import run_diagnostics
 from .fixtures import FixtureBuildError, FixtureStore, build_fixtures, fixture_integrity_report
 from .models import EpisodeOutcome
@@ -40,9 +40,24 @@ def build_dataset_main() -> None:
     parser.add_argument("--fixtures", type=Path, default=DEFAULT_FIXTURE_ROOT)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--gold", type=Path, default=DEFAULT_GOLD_PATH)
+    parser.add_argument(
+        "--force-new-cycle",
+        action="store_true",
+        help="replace reviewed gold with fresh pending candidates for a new SME review cycle",
+    )
     args = parser.parse_args()
     store = FixtureStore(args.fixtures)
-    _print(build_dataset(store, args.cases, args.gold))
+    try:
+        _print(
+            build_dataset(
+                store,
+                args.cases,
+                args.gold,
+                force_new_cycle=args.force_new_cycle,
+            )
+        )
+    except DatasetBuildError as exc:
+        parser.error(str(exc))
 
 
 def validate_main() -> None:

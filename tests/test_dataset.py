@@ -2,14 +2,24 @@ from pathlib import Path
 
 import pytest
 
+import govagent_kr.dataset as dataset_module
+from govagent_kr.canonical import canonical_json_bytes
 from govagent_kr.dataset import (
+    DatasetBuildError,
     build_dataset,
     dataset_integrity_report,
     load_cases,
     load_gold,
 )
 from govagent_kr.fixtures import SNAPSHOTS, FixtureStore
-from govagent_kr.models import AnswerStatus, CaseRecord, Conclusion, GoldRecord
+from govagent_kr.models import (
+    AnswerStatus,
+    CaseRecord,
+    Conclusion,
+    GoldRecord,
+    GoldReview,
+    ReviewStatus,
+)
 
 H_2018_POST = "KR-LAW-010098:204108:20180724"
 H_2020_PRE = "KR-LAW-010098:221951:20201001"
@@ -44,6 +54,123 @@ def _required_identities(record: GoldRecord) -> set[tuple[str, str]]:
     return {
         (citation.history_id, citation.provision_locator) for citation in record.required_citations
     }
+
+
+def _write_gold(path: Path, records: list[GoldRecord]) -> None:
+    path.write_bytes(
+        b"".join(canonical_json_bytes(record.model_dump(mode="json")) for record in records)
+    )
+
+
+def _mark_first_gold_adjudicated(path: Path) -> None:
+    records = load_gold(path)
+    records[0] = records[0].model_copy(
+        update={
+            "review": GoldReview(
+                status=ReviewStatus.ADJUDICATED,
+                reviewer_1="sme-one",
+                reviewer_2="sme-two",
+                reviewer_1_verdict="correct",
+                reviewer_2_verdict="correct",
+                resolution="[adjudicator_id=lead-sme] accepted",
+            )
+        }
+    )
+    _write_gold(path, records)
+
+
+def test_regeneration_refuses_reviewed_gold_without_explicit_new_cycle(
+    tmp_path: Path,
+) -> None:
+    cases_path = tmp_path / "cases.jsonl"
+    gold_path = tmp_path / "gold.jsonl"
+    store = FixtureStore()
+    build_dataset(store, cases_path=cases_path, gold_path=gold_path)
+    _mark_first_gold_adjudicated(gold_path)
+    before = (cases_path.read_bytes(), gold_path.read_bytes())
+
+    with pytest.raises(DatasetBuildError, match="reviewed records"):
+        build_dataset(store, cases_path=cases_path, gold_path=gold_path)
+
+    assert (cases_path.read_bytes(), gold_path.read_bytes()) == before
+
+
+def test_explicit_new_cycle_replaces_reviewed_gold_with_valid_pending_pair(
+    tmp_path: Path,
+) -> None:
+    cases_path = tmp_path / "cases.jsonl"
+    gold_path = tmp_path / "gold.jsonl"
+    store = FixtureStore()
+    build_dataset(store, cases_path=cases_path, gold_path=gold_path)
+    _mark_first_gold_adjudicated(gold_path)
+
+    result = build_dataset(
+        store,
+        cases_path=cases_path,
+        gold_path=gold_path,
+        force_new_cycle=True,
+    )
+
+    report = dataset_integrity_report(store, cases_path, gold_path)
+    assert result["force_new_cycle"] is True
+    assert result["pair_validated_before_replace"] is True
+    assert report["ok"] is True
+    assert report["pending_human_review"] == 20
+    assert report["candidate_gold_blueprint_match"] is True
+
+
+def test_staged_validation_failure_preserves_existing_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = tmp_path / "cases.jsonl"
+    gold_path = tmp_path / "gold.jsonl"
+    store = FixtureStore()
+    build_dataset(store, cases_path=cases_path, gold_path=gold_path)
+    before = (cases_path.read_bytes(), gold_path.read_bytes())
+    monkeypatch.setattr(
+        dataset_module,
+        "dataset_integrity_report",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "case_count": 20,
+            "pending_human_review": 20,
+            "excluded_items": 0,
+            "case_blueprint_match": True,
+            "candidate_gold_blueprint_match": False,
+            "errors": ["synthetic staged validation failure"],
+        },
+    )
+
+    with pytest.raises(DatasetBuildError, match="synthetic staged validation failure"):
+        build_dataset(store, cases_path=cases_path, gold_path=gold_path)
+
+    assert (cases_path.read_bytes(), gold_path.read_bytes()) == before
+
+
+def test_second_replace_failure_rolls_back_both_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = tmp_path / "cases.jsonl"
+    gold_path = tmp_path / "gold.jsonl"
+    store = FixtureStore()
+    build_dataset(store, cases_path=cases_path, gold_path=gold_path)
+    before = (cases_path.read_bytes(), gold_path.read_bytes())
+    real_replace = dataset_module.os.replace
+    replacements = 0
+
+    def fail_second_replace(source: Path, target: Path) -> None:
+        nonlocal replacements
+        replacements += 1
+        if replacements == 2:
+            raise OSError("synthetic second replace failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(dataset_module.os, "replace", fail_second_replace)
+
+    with pytest.raises(DatasetBuildError, match="prior pair was restored"):
+        build_dataset(store, cases_path=cases_path, gold_path=gold_path)
+
+    assert (cases_path.read_bytes(), gold_path.read_bytes()) == before
 
 
 @pytest.mark.parametrize(

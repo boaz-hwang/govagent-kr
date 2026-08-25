@@ -16,6 +16,14 @@ DEFAULT_FIXTURE_ROOT = PACKAGE_ROOT / "fixtures" / "local-contract-decree"
 DEFAULT_CASES_PATH = PACKAGE_ROOT / "data" / "cases.jsonl"
 DEFAULT_GOLD_PATH = PACKAGE_ROOT / "data" / "gold.jsonl"
 
+SMOKE_ITEM_IDS = (
+    "social-enterprise-direct-award--post_effective",
+    "social-enterprise-single-quote--post_effective",
+    "statutory-digital-service--post_effective",
+    "legacy-innovation-transition--post_effective",
+    "material-price-adjustment-transition--post_effective",
+)
+
 MAX_SUBMISSION_BYTES = 65_536
 MAX_SELECTED_PROVISIONS = 32
 MAX_MISSING_FACTS = 16

@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from .canonical import canonical_json_bytes, content_sha256
-from .constants import PACKAGE_ROOT, PROFILE_ID, PROFILE_VERSION
+from .constants import PACKAGE_ROOT, PROFILE_ID, PROFILE_VERSION, SMOKE_ITEM_IDS
 from .dataset import dataset_integrity_report
 from .diagnostics import run_diagnostics
 from .fixtures import FixtureStore
-from .model_config import normalize_frozen_model_config
+from .model_config import frozen_model_config_sha256, normalize_frozen_model_config
 from .strict_json import StrictJSONError, parse_strict_json_object
 
 
@@ -271,30 +271,149 @@ def _validate_gold_review_receipt(
     return receipt
 
 
-def _validate_analysis_manifest_semantics(manifest: dict[str, Any]) -> None:
+def _validate_smoke_review_receipt(
+    receipt: dict[str, Any] | None,
+    *,
+    root: Path,
+    artifact_set_sha256: str,
+    git_commit: str,
+    requested_model: str,
+    model_config: dict[str, Any],
+    container: dict[str, Any] | None,
+    quality_receipt: dict[str, Any],
+    gold_review_receipt: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(receipt, dict):
+        raise FreezeError("analysis freeze requires a smoke review receipt")
+    recorded_hash = receipt.get("receipt_sha256")
+    unsigned = dict(receipt)
+    unsigned.pop("receipt_sha256", None)
+    if recorded_hash != content_sha256(canonical_json_bytes(unsigned)):
+        raise FreezeError("smoke review receipt hash is invalid")
+    if (
+        receipt.get("schema_version") != "govagent-kr/smoke-review-receipt-v0.1"
+        or receipt.get("profile_id") != PROFILE_ID
+        or receipt.get("profile_version") != PROFILE_VERSION
+    ):
+        raise FreezeError("smoke review receipt schema or profile is unsupported")
+    if receipt.get("item_ids") != list(SMOKE_ITEM_IDS) or receipt.get("item_count") != len(
+        SMOKE_ITEM_IDS
+    ):
+        raise FreezeError("smoke review receipt does not cover the fixed five items")
+    required_flags = {
+        "human_review_complete": True,
+        "grader_visible": False,
+        "grader_agreement_complete": True,
+        "all_environment_valid": True,
+        "unresolved_defect_count": 0,
+        "reviewer_identity_authenticated": False,
+    }
+    if any(receipt.get(key) != expected for key, expected in required_flags.items()):
+        raise FreezeError("smoke review receipt governance flags are invalid")
+    if (
+        receipt.get("epoch") != 1
+        or receipt.get("grader_agreement_count") != len(SMOKE_ITEM_IDS)
+        or type(receipt.get("resolved_sut_error_count")) is not int
+        or not 0 <= receipt["resolved_sut_error_count"] <= len(SMOKE_ITEM_IDS)
+        or not isinstance(receipt.get("eval_run_id"), str)
+        or not receipt["eval_run_id"].strip()
+    ):
+        raise FreezeError("smoke review receipt run or agreement counts are invalid")
+    reviewer_ids = receipt.get("reviewer_ids")
+    if (
+        not isinstance(reviewer_ids, list)
+        or not reviewer_ids
+        or any(
+            not isinstance(value, str) or not value or value != value.strip()
+            for value in reviewer_ids
+        )
+        or len(reviewer_ids) != len(set(reviewer_ids))
+    ):
+        raise FreezeError("smoke review receipt reviewer IDs are invalid")
+    if receipt.get("artifact_set_sha256") != artifact_set_sha256:
+        raise FreezeError("smoke review receipt artifact set differs from the analysis freeze")
+    if receipt.get("git_commit") != git_commit:
+        raise FreezeError("smoke review receipt git commit differs from the analysis freeze")
+    if receipt.get("requested_model") != requested_model:
+        raise FreezeError("smoke review receipt model differs from the analysis freeze")
+    if receipt.get("model_config_sha256") != frozen_model_config_sha256(model_config):
+        raise FreezeError(
+            "smoke review receipt model configuration differs from the analysis freeze"
+        )
+    image_id = container.get("image_id") if isinstance(container, dict) else None
+    if receipt.get("container_image_id") != image_id:
+        raise FreezeError("smoke review receipt image differs from the analysis freeze")
+    if receipt.get("quality_receipt_sha256") != quality_receipt.get("receipt_sha256"):
+        raise FreezeError("smoke review receipt quality evidence differs from the analysis freeze")
+    if receipt.get("gold_review_receipt_sha256") != gold_review_receipt.get("receipt_sha256"):
+        raise FreezeError("smoke review receipt gold evidence differs from the analysis freeze")
+    if receipt.get("source_cases_sha256") != content_sha256(
+        (root / "data" / "cases.jsonl").read_bytes()
+    ):
+        raise FreezeError("smoke review receipt cases differ from the analysis freeze")
+    if receipt.get("source_gold_sha256") != content_sha256(
+        (root / "data" / "gold.jsonl").read_bytes()
+    ):
+        raise FreezeError("smoke review receipt gold differs from the analysis freeze")
+    hash_fields = (
+        "smoke_freeze_id",
+        "smoke_freeze_sha256",
+        "source_log_sha256",
+        "review_bundle_manifest_sha256",
+        "blind_items_sha256",
+        "identity_map_sha256",
+        "primary_reviews_sha256",
+        "evidence_artifact_set_sha256",
+    )
+    if any(not _is_sha256(receipt.get(key)) for key in hash_fields):
+        raise FreezeError("smoke review receipt contains an invalid evidence hash")
+    evidence_hash_keys = (
+        "smoke_freeze_sha256",
+        "source_log_sha256",
+        "review_bundle_manifest_sha256",
+        "blind_items_sha256",
+        "identity_map_sha256",
+        "primary_reviews_sha256",
+    )
+    evidence_hashes = {key: receipt[key] for key in evidence_hash_keys}
+    if receipt.get("evidence_artifact_set_sha256") != content_sha256(
+        canonical_json_bytes(evidence_hashes)
+    ):
+        raise FreezeError("smoke review evidence artifact set hash is invalid")
+    return receipt
+
+
+def _validate_frozen_manifest_semantics(
+    manifest: dict[str, Any],
+    *,
+    freeze_kind: str,
+    analysis_eligible: bool,
+    smoke_eligible: bool,
+) -> None:
     if (
         manifest.get("profile_id") != PROFILE_ID
         or manifest.get("profile_version") != PROFILE_VERSION
     ):
         raise FreezeError("analysis freeze profile differs from this runtime")
     if (
-        manifest.get("freeze_kind") != "analysis_freeze"
-        or manifest.get("analysis_eligible") is not True
+        manifest.get("freeze_kind") != freeze_kind
+        or manifest.get("analysis_eligible") is not analysis_eligible
+        or manifest.get("smoke_eligible") is not smoke_eligible
     ):
-        raise FreezeError("analysis freeze kind or eligibility is invalid")
+        raise FreezeError("frozen manifest kind or eligibility is invalid")
     requested_model = manifest.get("requested_model")
     if (
         not isinstance(requested_model, str)
         or not requested_model
         or requested_model != requested_model.strip()
     ):
-        raise FreezeError("analysis freeze requested_model is invalid")
+        raise FreezeError("frozen requested_model is invalid")
     try:
         normalized_model_config = normalize_frozen_model_config(manifest.get("model_config"))
     except ValueError as exc:
-        raise FreezeError("analysis freeze model_config is invalid") from exc
+        raise FreezeError("frozen model_config is invalid") from exc
     if manifest.get("model_config") != normalized_model_config:
-        raise FreezeError("analysis freeze model_config is not in canonical frozen form")
+        raise FreezeError("frozen model_config is not in canonical form")
 
     dataset_review = manifest.get("dataset_review")
     if not isinstance(dataset_review, dict) or dataset_review != {
@@ -302,10 +421,10 @@ def _validate_analysis_manifest_semantics(manifest: dict[str, Any]) -> None:
         "pending_human_review": 0,
         "excluded_items": 0,
     }:
-        raise FreezeError("analysis freeze dataset review is incomplete")
+        raise FreezeError("frozen dataset review is incomplete")
     git = manifest.get("git")
     if not isinstance(git, dict) or git.get("gov_agent_worktree_status") != "":
-        raise FreezeError("analysis freeze was not created from a clean worktree")
+        raise FreezeError("frozen manifest was not created from a clean worktree")
     runtime = manifest.get("runtime")
     try:
         expected_runtime = {
@@ -315,11 +434,11 @@ def _validate_analysis_manifest_semantics(manifest: dict[str, Any]) -> None:
             "platform": platform.platform(),
         }
     except importlib.metadata.PackageNotFoundError as exc:
-        raise FreezeError("analysis freeze runtime packages are not installed") from exc
+        raise FreezeError("frozen runtime packages are not installed") from exc
     if runtime != expected_runtime:
-        raise FreezeError("analysis freeze runtime differs from the current runtime")
+        raise FreezeError("frozen runtime differs from the current runtime")
     if not _is_sha256(manifest.get("diagnostics_sha256")):
-        raise FreezeError("analysis freeze diagnostics hash is invalid")
+        raise FreezeError("frozen diagnostics hash is invalid")
     container = manifest.get("container")
     image_id = container.get("image_id") if isinstance(container, dict) else None
     if (
@@ -328,7 +447,25 @@ def _validate_analysis_manifest_semantics(manifest: dict[str, Any]) -> None:
         or not _is_sha256(image_id.removeprefix("sha256:"))
         or container.get("requested_image") != image_id
     ):
-        raise FreezeError("analysis freeze container identity is not immutable")
+        raise FreezeError("frozen container identity is not immutable")
+
+
+def _validate_analysis_manifest_semantics(manifest: dict[str, Any]) -> None:
+    _validate_frozen_manifest_semantics(
+        manifest,
+        freeze_kind="analysis_freeze",
+        analysis_eligible=True,
+        smoke_eligible=False,
+    )
+
+
+def _validate_smoke_manifest_semantics(manifest: dict[str, Any]) -> None:
+    _validate_frozen_manifest_semantics(
+        manifest,
+        freeze_kind="smoke_freeze",
+        analysis_eligible=False,
+        smoke_eligible=True,
+    )
 
 
 def build_freeze_manifest(
@@ -340,21 +477,23 @@ def build_freeze_manifest(
     container_image: str | None,
     quality_receipt: dict[str, Any] | None = None,
     gold_review_receipt: dict[str, Any] | None = None,
+    smoke_review_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
-    if mode not in {"candidate", "analysis"}:
+    if mode not in {"candidate", "smoke", "analysis"}:
         raise FreezeError(f"unsupported freeze mode: {mode}")
     if not requested_model.strip():
         raise FreezeError("requested_model must be non-empty")
     _reject_secrets(model_config)
-    if mode == "analysis" and not model_config:
-        raise FreezeError("analysis freeze requires an explicit model configuration")
+    frozen_mode = mode in {"smoke", "analysis"}
+    if frozen_mode and not model_config:
+        raise FreezeError("smoke and analysis freezes require an explicit model configuration")
     stored_model_config = model_config
-    if mode == "analysis":
+    if frozen_mode:
         try:
             stored_model_config = normalize_frozen_model_config(model_config)
         except ValueError as exc:
-            raise FreezeError("analysis freeze model_config is invalid") from exc
+            raise FreezeError("smoke or analysis freeze model_config is invalid") from exc
     diagnostics = run_diagnostics(
         root / "fixtures" / "local-contract-decree",
         root / "data" / "cases.jsonl",
@@ -367,23 +506,23 @@ def build_freeze_manifest(
         root / "data" / "cases.jsonl",
         root / "data" / "gold.jsonl",
     )
-    if mode == "analysis" and not dataset["analysis_ready"]:
-        raise FreezeError("analysis freeze requires two-person gold adjudication for every item")
-    if mode == "analysis" and container_image is None:
-        raise FreezeError("analysis freeze requires an immutable SUT container image")
+    if frozen_mode and not dataset["analysis_ready"]:
+        raise FreezeError("smoke and analysis freezes require adjudicated gold for every item")
+    if frozen_mode and container_image is None:
+        raise FreezeError("smoke and analysis freezes require an immutable SUT container image")
 
     files = [_file_record(path, root) for path in _critical_files(root)]
     file_set_hash = content_sha256(canonical_json_bytes(files))
     container = _container_record(container_image)
-    if mode == "analysis" and container is not None and container_image != container["image_id"]:
+    if frozen_mode and container is not None and container_image != container["image_id"]:
         raise FreezeError(
-            "analysis freeze requires the exact sha256 image ID, not a mutable tag or alias"
+            "smoke and analysis freezes require the exact sha256 image ID, not a mutable tag"
         )
     repository_root = Path(_git_value(root, "rev-parse", "--show-toplevel"))
     scoped_path = root.relative_to(repository_root).as_posix()
     scoped_status = _git_value(repository_root, "status", "--short", "--", scoped_path)
-    if mode == "analysis" and scoped_status:
-        raise FreezeError("analysis freeze requires a clean gov-agent worktree")
+    if frozen_mode and scoped_status:
+        raise FreezeError("smoke and analysis freezes require a clean gov-agent worktree")
     git_commit = _git_value(repository_root, "rev-parse", "HEAD")
     validated_quality = (
         _validate_analysis_quality_receipt(
@@ -392,19 +531,38 @@ def build_freeze_manifest(
             git_commit=git_commit,
             container=container,
         )
-        if mode == "analysis"
+        if frozen_mode
         else None
     )
     validated_gold_review = (
-        _validate_gold_review_receipt(gold_review_receipt, root=root)
+        _validate_gold_review_receipt(gold_review_receipt, root=root) if frozen_mode else None
+    )
+    validated_smoke_review = (
+        _validate_smoke_review_receipt(
+            smoke_review_receipt,
+            root=root,
+            artifact_set_sha256=file_set_hash,
+            git_commit=git_commit,
+            requested_model=requested_model,
+            model_config=stored_model_config,
+            container=container,
+            quality_receipt=validated_quality,
+            gold_review_receipt=validated_gold_review,
+        )
         if mode == "analysis"
         else None
     )
+    freeze_kind = {
+        "candidate": "engineering_candidate",
+        "smoke": "smoke_freeze",
+        "analysis": "analysis_freeze",
+    }[mode]
     base: dict[str, Any] = {
         "profile_id": PROFILE_ID,
         "profile_version": PROFILE_VERSION,
-        "freeze_kind": "analysis_freeze" if mode == "analysis" else "engineering_candidate",
+        "freeze_kind": freeze_kind,
         "analysis_eligible": mode == "analysis",
+        "smoke_eligible": mode == "smoke",
         "requested_model": requested_model,
         "model_config": stored_model_config,
         "runtime": {
@@ -420,6 +578,7 @@ def build_freeze_manifest(
         },
         "quality_receipt": validated_quality,
         "gold_review_receipt": validated_gold_review,
+        "smoke_review_receipt": validated_smoke_review,
         "artifacts": files,
         "artifact_set_sha256": file_set_hash,
         "diagnostics_sha256": diagnostics["report_sha256"],
@@ -432,6 +591,8 @@ def build_freeze_manifest(
     base["freeze_id"] = content_sha256(canonical_json_bytes(base))
     if mode == "analysis":
         _validate_analysis_manifest_semantics(base)
+    elif mode == "smoke":
+        _validate_smoke_manifest_semantics(base)
     return base
 
 
@@ -440,6 +601,7 @@ def verify_freeze_manifest(
     *,
     root: Path = PACKAGE_ROOT,
     require_analysis: bool = False,
+    require_smoke: bool = False,
 ) -> dict[str, Any]:
     root = root.resolve()
     try:
@@ -453,13 +615,19 @@ def verify_freeze_manifest(
         raise FreezeError("freeze_id does not match manifest content")
     if require_analysis and manifest.get("analysis_eligible") is not True:
         raise FreezeError("an analysis-eligible freeze is required")
+    if require_smoke and manifest.get("smoke_eligible") is not True:
+        raise FreezeError("a smoke-eligible freeze is required")
     _reject_secrets(manifest.get("model_config"))
     if manifest.get("analysis_eligible") is True:
         _validate_analysis_manifest_semantics(manifest)
+    elif manifest.get("smoke_eligible") is True:
+        _validate_smoke_manifest_semantics(manifest)
     elif (
         manifest.get("profile_id") != PROFILE_ID
         or manifest.get("profile_version") != PROFILE_VERSION
         or manifest.get("freeze_kind") != "engineering_candidate"
+        or manifest.get("analysis_eligible") is not False
+        or manifest.get("smoke_eligible") is not False
     ):
         raise FreezeError("candidate freeze schema or profile is invalid")
 
@@ -474,23 +642,24 @@ def verify_freeze_manifest(
     current_status = _git_value(repository_root, "status", "--short", "--", scoped_path)
     if manifest.get("git", {}).get("commit") != _git_value(repository_root, "rev-parse", "HEAD"):
         raise FreezeError("git commit differs from the freeze")
-    if manifest.get("analysis_eligible") is True and current_status:
-        raise FreezeError("analysis freeze verification requires a clean gov-agent worktree")
+    frozen_manifest = (
+        manifest.get("analysis_eligible") is True or manifest.get("smoke_eligible") is True
+    )
+    if frozen_manifest and current_status:
+        raise FreezeError("smoke and analysis freeze verification requires a clean worktree")
     container = manifest.get("container")
     current: dict[str, Any] | None = None
     if container is not None:
         if not isinstance(container, dict) or not isinstance(container.get("requested_image"), str):
             raise FreezeError("freeze container record is invalid")
-        if manifest.get("analysis_eligible") is True and container.get(
-            "requested_image"
-        ) != container.get("image_id"):
-            raise FreezeError("analysis freeze does not use its exact sha256 image ID")
+        if frozen_manifest and container.get("requested_image") != container.get("image_id"):
+            raise FreezeError("frozen manifest does not use its exact sha256 image ID")
         current = _container_record(container["requested_image"])
         if current is None or current["image_id"] != container.get("image_id"):
             raise FreezeError("SUT container image differs from the freeze")
-    elif require_analysis or manifest.get("analysis_eligible") is True:
-        raise FreezeError("analysis freeze has no SUT container")
-    if manifest.get("analysis_eligible") is True:
+    elif require_analysis or require_smoke or frozen_manifest:
+        raise FreezeError("smoke or analysis freeze has no SUT container")
+    if frozen_manifest:
         diagnostics = run_diagnostics(
             root / "fixtures" / "local-contract-decree",
             root / "data" / "cases.jsonl",
@@ -499,14 +668,28 @@ def verify_freeze_manifest(
         if diagnostics.get("analysis_ready") is not True or diagnostics.get(
             "report_sha256"
         ) != manifest.get("diagnostics_sha256"):
-            raise FreezeError("current diagnostics differ from the analysis freeze")
-        _validate_analysis_quality_receipt(
+            raise FreezeError("current diagnostics differ from the frozen manifest")
+        validated_quality = _validate_analysis_quality_receipt(
             manifest.get("quality_receipt"),
             artifact_set_sha256=content_sha256(canonical_json_bytes(expected_files)),
             git_commit=_git_value(repository_root, "rev-parse", "HEAD"),
             container=current,
         )
-        _validate_gold_review_receipt(manifest.get("gold_review_receipt"), root=root)
+        validated_gold_review = _validate_gold_review_receipt(
+            manifest.get("gold_review_receipt"), root=root
+        )
+        if manifest.get("analysis_eligible") is True:
+            _validate_smoke_review_receipt(
+                manifest.get("smoke_review_receipt"),
+                root=root,
+                artifact_set_sha256=content_sha256(canonical_json_bytes(expected_files)),
+                git_commit=_git_value(repository_root, "rev-parse", "HEAD"),
+                requested_model=manifest["requested_model"],
+                model_config=manifest["model_config"],
+                container=current,
+                quality_receipt=validated_quality,
+                gold_review_receipt=validated_gold_review,
+            )
     return manifest
 
 
@@ -516,10 +699,11 @@ def main() -> None:
     )
     parser.add_argument("--requested-model", required=True)
     parser.add_argument("--model-config", type=Path)
-    parser.add_argument("--mode", choices=("candidate", "analysis"), default="candidate")
+    parser.add_argument("--mode", choices=("candidate", "smoke", "analysis"), default="candidate")
     parser.add_argument("--container-image")
     parser.add_argument("--quality-receipt", type=Path)
     parser.add_argument("--gold-review-receipt", type=Path)
+    parser.add_argument("--smoke-review-receipt", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     model_config: dict[str, Any] = {}
@@ -546,6 +730,14 @@ def main() -> None:
             )
         except (OSError, StrictJSONError) as exc:
             parser.error(f"invalid --gold-review-receipt: {exc}")
+    smoke_review_receipt: dict[str, Any] | None = None
+    if args.smoke_review_receipt:
+        try:
+            smoke_review_receipt = parse_strict_json_object(
+                args.smoke_review_receipt.read_bytes(), max_bytes=8 * 1024 * 1024
+            )
+        except (OSError, StrictJSONError) as exc:
+            parser.error(f"invalid --smoke-review-receipt: {exc}")
     try:
         manifest = build_freeze_manifest(
             requested_model=args.requested_model,
@@ -554,6 +746,7 @@ def main() -> None:
             container_image=args.container_image,
             quality_receipt=quality_receipt,
             gold_review_receipt=gold_review_receipt,
+            smoke_review_receipt=smoke_review_receipt,
         )
     except (FreezeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
@@ -566,11 +759,13 @@ def verify_main() -> None:
     parser = argparse.ArgumentParser(description="Verify a freeze against the current environment")
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--require-analysis", action="store_true")
+    parser.add_argument("--require-smoke", action="store_true")
     args = parser.parse_args()
     try:
         manifest = verify_freeze_manifest(
             args.manifest,
             require_analysis=args.require_analysis,
+            require_smoke=args.require_smoke,
         )
     except FreezeError as exc:
         parser.error(str(exc))

@@ -6,7 +6,9 @@ import pytest
 
 from govagent_kr import freeze
 from govagent_kr.canonical import canonical_json_bytes, content_sha256
+from govagent_kr.constants import SMOKE_ITEM_IDS
 from govagent_kr.freeze import FreezeError, build_freeze_manifest
+from govagent_kr.model_config import frozen_model_config_sha256
 
 
 def _project_tree(tmp_path: Path) -> tuple[Path, Path]:
@@ -153,6 +155,53 @@ def _gold_review_receipt(root: Path) -> dict[str, Any]:
     return base
 
 
+def _smoke_review_receipt(root: Path) -> dict[str, Any]:
+    quality = _quality_receipt(root)
+    gold_review = _gold_review_receipt(root)
+    evidence_hashes = {
+        "smoke_freeze_sha256": "9" * 64,
+        "source_log_sha256": "a" * 64,
+        "review_bundle_manifest_sha256": "b" * 64,
+        "blind_items_sha256": "c" * 64,
+        "identity_map_sha256": "d" * 64,
+        "primary_reviews_sha256": "e" * 64,
+    }
+    base: dict[str, Any] = {
+        "schema_version": "govagent-kr/smoke-review-receipt-v0.1",
+        "profile_id": "govagent-kr-temporal-citation",
+        "profile_version": "0.1.0",
+        "smoke_freeze_id": "8" * 64,
+        **evidence_hashes,
+        "evidence_artifact_set_sha256": content_sha256(canonical_json_bytes(evidence_hashes)),
+        "item_ids": list(SMOKE_ITEM_IDS),
+        "item_count": len(SMOKE_ITEM_IDS),
+        "epoch": 1,
+        "eval_run_id": "smoke-run",
+        "requested_model": "frontier-model",
+        "model_config_sha256": frozen_model_config_sha256(
+            {"temperature": 0, "reasoning_effort": "high"}
+        ),
+        "container_image_id": IMMUTABLE_IMAGE_ID,
+        "artifact_set_sha256": quality["artifact_set_sha256"],
+        "git_commit": "a" * 40,
+        "quality_receipt_sha256": quality["receipt_sha256"],
+        "gold_review_receipt_sha256": gold_review["receipt_sha256"],
+        "source_cases_sha256": content_sha256((root / "data" / "cases.jsonl").read_bytes()),
+        "source_gold_sha256": content_sha256((root / "data" / "gold.jsonl").read_bytes()),
+        "reviewer_ids": ["reviewer-a"],
+        "reviewer_identity_authenticated": False,
+        "human_review_complete": True,
+        "grader_visible": False,
+        "grader_agreement_complete": True,
+        "grader_agreement_count": len(SMOKE_ITEM_IDS),
+        "all_environment_valid": True,
+        "unresolved_defect_count": 0,
+        "resolved_sut_error_count": 1,
+    }
+    base["receipt_sha256"] = content_sha256(canonical_json_bytes(base))
+    return base
+
+
 def _build(
     root: Path,
     *,
@@ -160,18 +209,21 @@ def _build(
     image: str | None = None,
     include_quality: bool = True,
     include_gold_review: bool = True,
+    include_smoke_review: bool = True,
 ) -> dict[str, Any]:
+    frozen_mode = mode in {"smoke", "analysis"}
     return build_freeze_manifest(
         root=root,
         requested_model="frontier-model",
         model_config={"temperature": 0, "reasoning_effort": "high"},
         mode=mode,
         container_image=image,
-        quality_receipt=(
-            _quality_receipt(root) if mode == "analysis" and include_quality else None
-        ),
+        quality_receipt=(_quality_receipt(root) if frozen_mode and include_quality else None),
         gold_review_receipt=(
-            _gold_review_receipt(root) if mode == "analysis" and include_gold_review else None
+            _gold_review_receipt(root) if frozen_mode and include_gold_review else None
+        ),
+        smoke_review_receipt=(
+            _smoke_review_receipt(root) if mode == "analysis" and include_smoke_review else None
         ),
     )
 
@@ -190,6 +242,7 @@ def test_candidate_manifest_is_deterministic_and_scopes_git_to_project(
 
     assert first == second
     assert first["analysis_eligible"] is False
+    assert first["smoke_eligible"] is False
     assert first["git"]["gov_agent_worktree_status"] == "M note.txt"
     assert any(
         cwd == repository_root and args == ("status", "--short", "--", "gov-agent")
@@ -216,7 +269,7 @@ def test_analysis_freeze_requires_review_container_and_clean_worktree(
 ) -> None:
     repository_root, root = _project_tree(tmp_path)
     _patch_ready_environment(monkeypatch, repository_root, analysis_ready=False)
-    with pytest.raises(FreezeError, match="two-person gold adjudication"):
+    with pytest.raises(FreezeError, match="adjudicated gold"):
         _build(root, mode="analysis", image="agent@sha256:digest")
 
     _patch_ready_environment(monkeypatch, repository_root, analysis_ready=True)
@@ -237,10 +290,12 @@ def test_analysis_freeze_records_resolved_container_identity(
     manifest = _build(root, mode="analysis", image=IMMUTABLE_IMAGE_ID)
 
     assert manifest["analysis_eligible"] is True
+    assert manifest["smoke_eligible"] is False
     assert manifest["freeze_kind"] == "analysis_freeze"
     assert manifest["container"]["image_id"].startswith("sha256:")
     assert manifest["quality_receipt"]["analysis_quality_eligible"] is True
     assert manifest["gold_review_receipt"]["analysis_ready"] is True
+    assert manifest["smoke_review_receipt"]["human_review_complete"] is True
     assert manifest["model_config"]["generate"]["max_retries"] == 0
     assert manifest["model_config"]["model_args"] == {}
 
@@ -319,6 +374,54 @@ def test_analysis_freeze_requires_current_gold_review_receipt(
             container_image=IMMUTABLE_IMAGE_ID,
             quality_receipt=_quality_receipt(root),
             gold_review_receipt=stale,
+        )
+
+
+def test_smoke_freeze_precedes_and_is_distinct_from_analysis_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository_root, root = _project_tree(tmp_path)
+    _patch_ready_environment(monkeypatch, repository_root)
+
+    manifest = _build(root, mode="smoke", image=IMMUTABLE_IMAGE_ID)
+
+    assert manifest["freeze_kind"] == "smoke_freeze"
+    assert manifest["smoke_eligible"] is True
+    assert manifest["analysis_eligible"] is False
+    assert manifest["quality_receipt"]["analysis_quality_eligible"] is True
+    assert manifest["gold_review_receipt"]["analysis_ready"] is True
+    assert manifest["smoke_review_receipt"] is None
+
+
+def test_analysis_freeze_requires_current_smoke_review_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository_root, root = _project_tree(tmp_path)
+    _patch_ready_environment(monkeypatch, repository_root)
+
+    with pytest.raises(FreezeError, match="requires a smoke review receipt"):
+        _build(
+            root,
+            mode="analysis",
+            image=IMMUTABLE_IMAGE_ID,
+            include_smoke_review=False,
+        )
+
+    stale = _smoke_review_receipt(root)
+    stale["artifact_set_sha256"] = "0" * 64
+    unsigned = dict(stale)
+    unsigned.pop("receipt_sha256")
+    stale["receipt_sha256"] = content_sha256(canonical_json_bytes(unsigned))
+    with pytest.raises(FreezeError, match="artifact set differs"):
+        build_freeze_manifest(
+            root=root,
+            requested_model="frontier-model",
+            model_config={"temperature": 0, "reasoning_effort": "high"},
+            mode="analysis",
+            container_image=IMMUTABLE_IMAGE_ID,
+            quality_receipt=_quality_receipt(root),
+            gold_review_receipt=_gold_review_receipt(root),
+            smoke_review_receipt=stale,
         )
 
 

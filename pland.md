@@ -33,7 +33,7 @@ MVP의 목적은 제품을 출시하는 것이 아니라 세 가지를 검증하
 
 ### 현재 구현 결과
 
-2026-08-25 기준으로 사람이 아닌 공학 작업은 구현돼 있다.
+2026-08-26 기준으로 사람이 아닌 공학 작업은 구현돼 있다.
 
 | 영역 | 구현 상태 | 분석 사용 조건 |
 | --- | --- | --- |
@@ -42,14 +42,15 @@ MVP의 목적은 제품을 출시하는 것이 아니라 세 가지를 검증하
 | grader | strict JSON, 결론, 4-tuple citation, 기권·오류 분리 | gold 확정 뒤 freeze |
 | 실행 환경 | Inspect Agent Bridge, Docker network none, gold 미마운트 | 고정 provider/model로 smoke |
 | 진단 | fixture oracle 20/20, current-version ablation 9/20 실패 | 모델 성능으로 해석하지 않음 |
-| 증거 흐름 | quality receipt, analysis freeze, blind 1·2차 검토, 최종 report | 실제 60 runs와 사람 검토 필요 |
+| 증거 흐름 | quality·gold·5-item smoke receipt, analysis freeze, blind 1·2차 검토, 최종 report | 실제 smoke·60 runs와 사람 검토 필요 |
 
 분석 freeze는 현재 commit·critical artifact set·정확한 `sha256` SUT image와 그 이미지로
 수행한 Docker smoke를 하나의 quality receipt로 묶는다. pending gold, mutable image tag, dirty
 worktree 또는 낡은 quality receipt 중 하나라도 있으면 본실행을 거부한다.
 
 아직 만들지 않은 증거도 명확하다. 현재 gold 20건은 `pending`이고 provider credential이 없어
-frontier 60 runs는 실행하지 않았다. transcript 사람 검토와 `Go / Redesign / Stop` 결정도 없다.
+frontier 5-item smoke와 60 runs는 실행하지 않았다. transcript 사람 검토와
+`Go / Redesign / Stop` 결정도 없다.
 따라서 구현 완료는 `평가 환경의 공학적 준비`를 뜻하며 평가 결과 완료를 뜻하지 않는다.
 
 ---
@@ -413,12 +414,14 @@ frontier SUT는 본실행 전에 다음 manifest로 동결한다.
 - tool contract와 budget
 - Inspect·environment·grader version
 
-5개 item으로 smoke rollout을 먼저 수행한다. transcript를 읽고 task·gold·tool·grader·격리를
-수정한 뒤 environment와 grader를 freeze한다. v0.1의 사람 smoke 검토는 실행 명령과 보관
-artifact를 README에 고정한 운영 게이트이며, analysis freeze가 그 검토 receipt까지 자동
-검증하지는 않는다. 실제 본실행 운영자는 smoke log·blind bundle·검토 CSV·결함 조치 기록을
-freeze 옆에 보관하고 별도 승인해야 한다. 다음 버전에서는 이 receipt를 freeze 필수 입력으로
-결속한다.
+5개 item으로 smoke rollout을 먼저 수행한다. transcript를 grader-blind로 읽고
+task·gold·tool·grader·격리를 확인한다. smoke receipt는 고정 5개 sample ID, 1회 실행,
+smoke freeze, Inspect log, blind bundle, 사람 검토 CSV, model config, immutable image와 현재
+artifact set을 함께 hash로 묶는다. 사람 판정과 동결 grader가 5건 모두 일치하고 환경·설계
+결함이 없을 때만 receipt가 발급된다. analysis freeze는 이 receipt를 필수 입력으로 받고 현재
+quality·gold-review receipt, commit, corpus와 다시 대조한다. 어느 하나라도 달라지면 본실행을
+거부한다. reviewer ID의 실제 신원·독립성은 저장소가 인증하지 않으므로 기관 승인기록을 별도로
+보관한다.
 
 freeze 후 environment, gold, tool, prompt contract나 grader가 바뀌면 기존 본실행 60 runs는 분석에서 제외하고 전부 다시 실행한다. 일부 run만 새 버전으로 교체해 합산하지 않는다.
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -31,6 +33,10 @@ from .models import (
     TaskInput,
     Variant,
 )
+
+
+class DatasetBuildError(RuntimeError):
+    """Raised when candidate dataset regeneration cannot complete safely."""
 
 
 @dataclass(frozen=True)
@@ -537,7 +543,31 @@ def build_dataset(
     store: FixtureStore,
     cases_path: Path = DEFAULT_CASES_PATH,
     gold_path: Path = DEFAULT_GOLD_PATH,
+    *,
+    force_new_cycle: bool = False,
 ) -> dict[str, Any]:
+    cases_path = cases_path.resolve()
+    gold_path = gold_path.resolve()
+    if cases_path == gold_path:
+        raise DatasetBuildError("cases and gold outputs must be different files")
+    if gold_path.exists():
+        try:
+            existing_gold = load_gold(gold_path)
+        except (OSError, ValueError) as exc:
+            raise DatasetBuildError(
+                "existing gold is unreadable; refusing to replace it without manual recovery"
+            ) from exc
+        finalized = [
+            record.item_id
+            for record in existing_gold
+            if record.review.status != ReviewStatus.PENDING
+        ]
+        if finalized and not force_new_cycle:
+            raise DatasetBuildError(
+                "existing gold contains reviewed records; pass force_new_cycle=True only when "
+                "starting an explicit new legal-review cycle"
+            )
+
     cases, gold_records = _build_records(store)
     cases_payload = b"".join(
         canonical_json_bytes(record.model_dump(mode="json")) for record in cases
@@ -547,15 +577,100 @@ def build_dataset(
     )
     cases_path.parent.mkdir(parents=True, exist_ok=True)
     gold_path.parent.mkdir(parents=True, exist_ok=True)
-    cases_path.write_bytes(cases_payload)
-    gold_path.write_bytes(gold_payload)
+
+    staged_cases = _write_staged_payload(cases_path, cases_payload)
+    staged_gold: Path | None = None
+    try:
+        staged_gold = _write_staged_payload(gold_path, gold_payload)
+        staged_report = dataset_integrity_report(store, staged_cases, staged_gold)
+        if not (
+            staged_report["ok"]
+            and staged_report["case_count"] == len(cases)
+            and staged_report["pending_human_review"] == len(gold_records)
+            and staged_report["excluded_items"] == 0
+            and staged_report["case_blueprint_match"] is True
+            and staged_report["candidate_gold_blueprint_match"] is True
+        ):
+            raise DatasetBuildError(
+                "staged dataset pair failed deterministic validation: "
+                + "; ".join(staged_report.get("errors", []))
+            )
+        _replace_dataset_pair(staged_cases, cases_path, staged_gold, gold_path)
+    finally:
+        staged_cases.unlink(missing_ok=True)
+        if staged_gold is not None:
+            staged_gold.unlink(missing_ok=True)
     return {
         "case_count": len(cases),
         "gold_count": len(gold_records),
         "case_sha256": content_sha256(cases_payload),
         "gold_sha256": content_sha256(gold_payload),
         "review_status": "pending",
+        "force_new_cycle": force_new_cycle,
+        "pair_validated_before_replace": True,
     }
+
+
+def _write_staged_payload(target: Path, payload: bytes) -> Path:
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    staged_path = Path(raw_path)
+    try:
+        handle = os.fdopen(descriptor, "wb")
+    except BaseException:
+        os.close(descriptor)
+        staged_path.unlink(missing_ok=True)
+        raise
+    try:
+        with handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        staged_path.unlink(missing_ok=True)
+        raise
+    return staged_path
+
+
+def _restore_payload(target: Path, previous: bytes | None) -> None:
+    if previous is None:
+        target.unlink(missing_ok=True)
+        return
+    staged = _write_staged_payload(target, previous)
+    try:
+        os.replace(staged, target)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _replace_dataset_pair(
+    staged_cases: Path,
+    cases_path: Path,
+    staged_gold: Path,
+    gold_path: Path,
+) -> None:
+    previous_cases = cases_path.read_bytes() if cases_path.exists() else None
+    previous_gold = gold_path.read_bytes() if gold_path.exists() else None
+    try:
+        os.replace(staged_cases, cases_path)
+        os.replace(staged_gold, gold_path)
+    except OSError as exc:
+        rollback_errors: list[str] = []
+        for target, previous in (
+            (cases_path, previous_cases),
+            (gold_path, previous_gold),
+        ):
+            try:
+                _restore_payload(target, previous)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"{target}: {rollback_exc}")
+        if rollback_errors:
+            raise DatasetBuildError(
+                "dataset replacement failed and rollback was incomplete: "
+                + "; ".join(rollback_errors)
+            ) from exc
+        raise DatasetBuildError("dataset replacement failed; prior pair was restored") from exc
 
 
 def _load_jsonl(path: Path, model_type: type[CaseRecord] | type[GoldRecord]) -> list[Any]:
@@ -724,6 +839,7 @@ def dataset_integrity_report(
 __all__ = [
     "FAMILIES",
     "H_LATEST",
+    "DatasetBuildError",
     "build_dataset",
     "dataset_integrity_report",
     "load_cases",

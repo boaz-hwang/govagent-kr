@@ -252,3 +252,49 @@ def test_mockllm_law_tool_round_trip_scores_positive(tmp_path: Path) -> None:
     assert "KR-LAW-010098:201260:20180118" in tool_messages[0].text
     assert "exact_passage_hash" not in tool_messages[0].text
     assert sum(event.event == "model" for event in sample.events) == 2
+
+
+@pytest.mark.skipif(
+    os.environ.get("GOVAGENT_RUN_DOCKER_SMOKE") != "1",
+    reason="set GOVAGENT_RUN_DOCKER_SMOKE=1 to run the Docker/Agent Bridge smoke test",
+)
+def test_fixed_five_sample_selection_is_recorded_for_smoke_receipt(tmp_path: Path) -> None:
+    pytest.importorskip("inspect_ai")
+    from inspect_ai import eval as inspect_eval
+
+    from govagent_kr.constants import SMOKE_ITEM_IDS
+    from govagent_kr.task import govagent_kr
+
+    selected = list(SMOKE_ITEM_IDS)
+    logs = inspect_eval(
+        govagent_kr(
+            trials=1,
+            allow_pending_gold=True,
+            compose_path=str(DOCKER_SMOKE_COMPOSE_PATH),
+        ),
+        model="mockllm/model",
+        sample_id=selected,
+        epochs=1,
+        display="none",
+        log_dir=str(tmp_path),
+        log_format="eval",
+        log_buffer=1,
+        log_model_api=True,
+        max_samples=1,
+        max_connections=1,
+        max_retries=0,
+        timeout=120,
+        attempt_timeout=120,
+        fail_on_error=False,
+    )
+
+    assert len(logs) == 1
+    log = logs[0]
+    assert log.status == "success"
+    assert log.samples is not None
+    assert {(str(sample.id), sample.epoch) for sample in log.samples} == {
+        (item_id, 1) for item_id in selected
+    }
+    assert log.eval.dataset.samples == 20
+    assert log.eval.dataset.sample_ids == selected
+    assert log.eval.config.sample_id == selected

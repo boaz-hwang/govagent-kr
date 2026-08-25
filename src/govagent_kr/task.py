@@ -116,43 +116,69 @@ def _path(value: str | Path | None, default: Path) -> Path:
     return path.resolve()
 
 
-def _validate_analysis_freeze(freeze: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _validate_eval_freeze(
+    freeze: dict[str, Any],
+    *,
+    freeze_kind: str,
+    analysis_eligible: bool,
+    smoke_eligible: bool,
+) -> dict[str, dict[str, Any]]:
+    label = "analysis" if analysis_eligible else "smoke"
     if freeze.get("profile_id") != PROFILE_ID or freeze.get("profile_version") != PROFILE_VERSION:
-        raise ValueError("analysis freeze profile differs from this task")
+        raise ValueError(f"{label} freeze profile differs from this task")
     if (
-        freeze.get("freeze_kind") != "analysis_freeze"
-        or freeze.get("analysis_eligible") is not True
+        freeze.get("freeze_kind") != freeze_kind
+        or freeze.get("analysis_eligible") is not analysis_eligible
+        or freeze.get("smoke_eligible") is not smoke_eligible
     ):
-        raise ValueError("analysis freeze has an invalid eligibility declaration")
+        raise ValueError(f"{label} freeze has an invalid eligibility declaration")
     requested_model = freeze.get("requested_model")
     if not isinstance(requested_model, str) or not requested_model.strip():
-        raise ValueError("analysis freeze requested_model must be non-empty")
+        raise ValueError(f"{label} freeze requested_model must be non-empty")
     dataset_review = freeze.get("dataset_review")
     if not isinstance(dataset_review, dict) or dataset_review.get("analysis_ready") is not True:
-        raise ValueError("analysis freeze does not record a completed dataset review")
+        raise ValueError(f"{label} freeze does not record a completed dataset review")
     if dataset_review.get("pending_human_review") != 0:
-        raise ValueError("analysis freeze records pending human gold review")
+        raise ValueError(f"{label} freeze records pending human gold review")
     git = freeze.get("git")
     if not isinstance(git, dict) or git.get("gov_agent_worktree_status") != "":
-        raise ValueError("analysis freeze was not created from a clean gov-agent worktree")
+        raise ValueError(f"{label} freeze was not created from a clean gov-agent worktree")
     runtime = freeze.get("runtime")
     if not isinstance(runtime, dict) or runtime.get("inspect_ai") != importlib.metadata.version(
         "inspect-ai"
     ):
-        raise ValueError("analysis freeze Inspect version differs from the runtime")
+        raise ValueError(f"{label} freeze Inspect version differs from the runtime")
     container = freeze.get("container")
     image_id = container.get("image_id") if isinstance(container, dict) else None
     if not isinstance(image_id, str) or not image_id.startswith("sha256:"):
-        raise ValueError("analysis freeze has no immutable SUT image ID")
+        raise ValueError(f"{label} freeze has no immutable SUT image ID")
     normalized = normalize_frozen_model_config(freeze.get("model_config"))
     if any(
         normalized["generate"].get(key) != value for key, value in REQUIRED_GENERATE_CONFIG.items()
     ):
         raise ValueError(
-            "analysis freeze must fix max_connections=1, max_retries=0, "
+            f"{label} freeze must fix max_connections=1, max_retries=0, "
             "timeout=120, and attempt_timeout=120"
         )
     return normalized
+
+
+def _validate_analysis_freeze(freeze: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return _validate_eval_freeze(
+        freeze,
+        freeze_kind="analysis_freeze",
+        analysis_eligible=True,
+        smoke_eligible=False,
+    )
+
+
+def _validate_smoke_freeze(freeze: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return _validate_eval_freeze(
+        freeze,
+        freeze_kind="smoke_freeze",
+        analysis_eligible=False,
+        smoke_eligible=True,
+    )
 
 
 def _message_for_bridge(message: Any) -> dict[str, Any]:
@@ -323,6 +349,7 @@ def govagent_kr(
     fixture_root: str | None = None,
     compose_path: str | None = None,
     freeze_manifest: str | None = None,
+    smoke_freeze_manifest: str | None = None,
     trials: int = 3,
     allow_pending_gold: bool = False,
 ) -> Task:
@@ -343,6 +370,11 @@ def govagent_kr(
         if not required.exists():
             raise FileNotFoundError(required)
 
+    if freeze_manifest is not None and smoke_freeze_manifest is not None:
+        raise ValueError("analysis and smoke freeze manifests are mutually exclusive")
+    if smoke_freeze_manifest is not None and allow_pending_gold:
+        raise ValueError("smoke receipt runs require adjudicated gold")
+
     samples = _samples(
         cases_path=resolved_cases,
         gold_path=resolved_gold,
@@ -353,13 +385,19 @@ def govagent_kr(
     if freeze_manifest is not None:
         freeze = verify_freeze_manifest(
             Path(freeze_manifest),
-            require_analysis=not allow_pending_gold,
+            require_analysis=True,
         )
+        frozen_model_config = _validate_analysis_freeze(freeze)
+    elif smoke_freeze_manifest is not None:
+        freeze = verify_freeze_manifest(
+            Path(smoke_freeze_manifest),
+            require_smoke=True,
+        )
+        frozen_model_config = _validate_smoke_freeze(freeze)
     elif not allow_pending_gold:
         raise ValueError("an analysis freeze manifest is required for a non-development run")
-    if not allow_pending_gold:
+    if freeze is not None:
         assert freeze is not None
-        frozen_model_config = _validate_analysis_freeze(freeze)
         expected_paths = {
             "cases_path": (resolved_cases, DEFAULT_CASES_PATH.resolve()),
             "gold_path": (resolved_gold, DEFAULT_GOLD_PATH.resolve()),
@@ -368,13 +406,17 @@ def govagent_kr(
         }
         for name, (actual, expected) in expected_paths.items():
             if actual != expected:
-                raise ValueError(f"analysis run {name} differs from the frozen project path")
-        if trials != 3:
-            raise ValueError("analysis run requires exactly 3 trials per item")
+                raise ValueError(f"frozen run {name} differs from the project path")
+        expected_trials = 3 if freeze["analysis_eligible"] else 1
+        if trials != expected_trials:
+            noun = "trial" if expected_trials == 1 else "trials"
+            raise ValueError(
+                f"{freeze['freeze_kind']} requires exactly {expected_trials} {noun} per item"
+            )
         frozen_image_id = freeze["container"]["image_id"]
         if os.environ.get("GOVAGENT_SUT_IMAGE") != frozen_image_id:
             raise ValueError(
-                "GOVAGENT_SUT_IMAGE must equal the immutable image ID in the analysis freeze"
+                "GOVAGENT_SUT_IMAGE must equal the immutable image ID in the frozen manifest"
             )
 
     model = None
@@ -409,6 +451,7 @@ def govagent_kr(
             "remote_mcp": False,
             "freeze_id": freeze["freeze_id"] if freeze else None,
             "analysis_eligible": bool(freeze and freeze["analysis_eligible"]),
+            "smoke_eligible": bool(freeze and freeze.get("smoke_eligible")),
             "frozen_requested_model": freeze["requested_model"] if freeze else None,
             "frozen_model_config": frozen_model_config,
             "frozen_model_config_sha256": (

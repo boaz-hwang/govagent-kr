@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import importlib.metadata
 import subprocess
 import sys
@@ -14,10 +15,12 @@ from inspect_ai.log import EvalError, EvalRevision
 from inspect_ai.model import ChatMessageUser, GenerateConfig, ModelOutput
 from inspect_ai.scorer import Score
 
+import govagent_kr.constants as constants_module
 from govagent_kr import report, review, task
 from govagent_kr.canonical import canonical_json_bytes, content_sha256
 from govagent_kr.constants import PACKAGE_ROOT, PROFILE_ID, PROFILE_VERSION
 from govagent_kr.dataset import load_cases, load_gold
+from govagent_kr.fixtures import FixtureStore
 from govagent_kr.freeze import FreezeError
 from govagent_kr.models import (
     EpisodeOutcome,
@@ -27,6 +30,7 @@ from govagent_kr.models import (
     ReviewStatus,
     RootCause,
 )
+from govagent_kr.scorer import gold_submission, grade_submission
 
 
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
@@ -165,6 +169,7 @@ def _analysis_freeze() -> dict[str, Any]:
         "profile_version": PROFILE_VERSION,
         "freeze_kind": "analysis_freeze",
         "analysis_eligible": True,
+        "smoke_eligible": False,
         "freeze_id": "f" * 64,
         "requested_model": "mockllm/model",
         "model_config": model_config,
@@ -173,6 +178,14 @@ def _analysis_freeze() -> dict[str, Any]:
         "runtime": {"inspect_ai": importlib.metadata.version("inspect-ai")},
         "container": {"image_id": "sha256:" + "c" * 64},
     }
+
+
+def _smoke_freeze() -> dict[str, Any]:
+    freeze = _analysis_freeze()
+    freeze["freeze_kind"] = "smoke_freeze"
+    freeze["analysis_eligible"] = False
+    freeze["smoke_eligible"] = True
+    return freeze
 
 
 def _frozen_run() -> tuple[SimpleNamespace, dict[str, Any], list[SimpleNamespace]]:
@@ -783,6 +796,54 @@ def test_analysis_task_binds_paths_trials_image_model_and_config(
         )
 
 
+def test_smoke_task_binds_one_trial_adjudicated_gold_image_model_and_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    freeze = _smoke_freeze()
+    manifest = tmp_path / "smoke-freeze.json"
+    manifest.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(task, "verify_freeze_manifest", lambda *args, **kwargs: freeze)
+    monkeypatch.setattr(
+        task,
+        "_samples",
+        lambda **kwargs: [Sample(id="item", input="question", target="{}")],
+    )
+    monkeypatch.setenv("GOVAGENT_SUT_IMAGE", freeze["container"]["image_id"])
+
+    eval_task = task.govagent_kr(
+        smoke_freeze_manifest=str(manifest),
+        compose_path=str(task.DEFAULT_FROZEN_COMPOSE_PATH),
+        trials=1,
+    )
+
+    assert eval_task.epochs == 1
+    assert eval_task.metadata["analysis_eligible"] is False
+    assert eval_task.metadata["smoke_eligible"] is True
+    assert eval_task.metadata["candidate_gold_allowed"] is False
+    assert eval_task.model is not None
+
+    with pytest.raises(ValueError, match="exactly 1 trial"):
+        task.govagent_kr(
+            smoke_freeze_manifest=str(manifest),
+            compose_path=str(task.DEFAULT_FROZEN_COMPOSE_PATH),
+            trials=3,
+        )
+    with pytest.raises(ValueError, match="require adjudicated gold"):
+        task.govagent_kr(
+            smoke_freeze_manifest=str(manifest),
+            compose_path=str(task.DEFAULT_FROZEN_COMPOSE_PATH),
+            trials=1,
+            allow_pending_gold=True,
+        )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        task.govagent_kr(
+            freeze_manifest=str(manifest),
+            smoke_freeze_manifest=str(manifest),
+            compose_path=str(task.DEFAULT_FROZEN_COMPOSE_PATH),
+            trials=1,
+        )
+
+
 def test_sample_candidate_flag_tracks_adjudicated_gold(tmp_path: Path) -> None:
     case = load_cases()[0]
     gold = load_gold()[0].model_copy(
@@ -957,3 +1018,201 @@ def test_task_file_loads_through_the_documented_inspect_cli_spec() -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert "src/govagent_kr/task.py@govagent_kr" in completed.stdout
+
+
+def _complete_clean_review_csv(path: Path, reviewer_id: str) -> None:
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    for row in rows:
+        row.update(
+            reviewer_id=reviewer_id,
+            human_task_verdict="correct",
+            environment_valid="true",
+            sut_error="false",
+            labels="",
+            primary_cause="",
+            note="synthetic transcript reviewed without grader output",
+        )
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=review.REVIEW_COLUMNS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _adjudicated_gold_records() -> list[Any]:
+    return [
+        record.model_copy(
+            update={
+                "review": GoldReview(
+                    status=ReviewStatus.ADJUDICATED,
+                    reviewer_1="legal-sme-one",
+                    reviewer_2="legal-sme-two",
+                    reviewer_1_verdict="correct",
+                    reviewer_2_verdict="correct",
+                    resolution="[adjudicator_id=legal-lead] accepted for synthetic replay",
+                )
+            }
+        )
+        for record in load_gold()
+    ]
+
+
+def test_synthetic_twenty_by_three_review_and_final_report_e2e(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import inspect_ai.log
+
+    cases_path = tmp_path / "data" / "cases.jsonl"
+    gold_path = tmp_path / "data" / "gold.jsonl"
+    _write_jsonl(
+        cases_path,
+        [record.model_dump(mode="json") for record in load_cases()],
+    )
+    adjudicated_gold = _adjudicated_gold_records()
+    _write_jsonl(
+        gold_path,
+        [record.model_dump(mode="json") for record in adjudicated_gold],
+    )
+    base_samples = task._samples(
+        cases_path=cases_path,
+        gold_path=gold_path,
+        allow_pending_gold=False,
+    )
+    gold_by_id = {record.item_id: record for record in adjudicated_gold}
+    store = FixtureStore()
+    samples: list[SimpleNamespace] = []
+    for base in base_samples:
+        completion = gold_submission(gold_by_id[str(base.id)], store).decode("utf-8")
+        grade = grade_submission(completion, gold_by_id[str(base.id)], store)
+        score = Score(
+            value=1,
+            answer=completion,
+            explanation="pass",
+            metadata=grade.model_dump(mode="json"),
+            history=[],
+        )
+        for epoch in (1, 2, 3):
+            samples.append(
+                SimpleNamespace(
+                    id=str(base.id),
+                    epoch=epoch,
+                    uuid=f"synthetic-{base.id}-{epoch}",
+                    input=base.input,
+                    target=base.target,
+                    metadata=base.metadata,
+                    messages=base.input,
+                    output=ModelOutput.from_content(
+                        model="mockllm/model",
+                        content=completion,
+                    ),
+                    error=None,
+                    scores={"govagent_strict_scorer": score},
+                    events=[],
+                    total_time=1.0,
+                    working_time=0.75,
+                    model_usage={},
+                    turn_count=2,
+                    invalidation=None,
+                    error_retries=None,
+                    model_fallbacks=None,
+                    token_limit=None,
+                    token_limit_type=None,
+                    token_limit_usage=None,
+                    limit=None,
+                )
+            )
+
+    log, freeze, _ = _frozen_run()
+    item_ids = [str(sample.id) for sample in base_samples]
+    log.eval.dataset.sample_ids = item_ids
+    log.eval.run_id = "synthetic-final-run"
+    log.samples = samples
+    log_path = tmp_path / "logs" / "synthetic.eval"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_bytes(b"synthetic immutable Inspect evidence")
+    log_info = SimpleNamespace(name=str(log_path))
+
+    monkeypatch.setattr(
+        inspect_ai.log,
+        "list_eval_logs",
+        lambda _path, formats=None: [log_info],
+    )
+    monkeypatch.setattr(
+        inspect_ai.log,
+        "read_eval_log",
+        lambda _info, header_only=False: log,
+    )
+    monkeypatch.setattr(
+        inspect_ai.log,
+        "read_eval_log_samples",
+        lambda _info: iter(samples),
+    )
+
+    samples_by_pair = {(str(sample.id), sample.epoch): sample for sample in samples}
+
+    def read_sample(_path: str, *, id: str, epoch: int) -> SimpleNamespace:
+        return samples_by_pair[(str(id), epoch)]
+
+    monkeypatch.setattr(inspect_ai.log, "read_eval_log_sample", read_sample)
+    monkeypatch.setattr(report, "verify_freeze_manifest", lambda *args, **kwargs: freeze)
+    monkeypatch.setattr(constants_module, "DEFAULT_CASES_PATH", cases_path)
+    monkeypatch.setattr(constants_module, "DEFAULT_GOLD_PATH", gold_path)
+
+    key_file = tmp_path / "blind-key.bin"
+    key_file.write_bytes(b"k" * 32)
+    primary_bundle = tmp_path / "primary"
+    review.export_blind_bundle(tmp_path / "logs", primary_bundle, key_file)
+    primary_reviews = primary_bundle / "primary-review.csv"
+    _complete_clean_review_csv(primary_reviews, "primary-reviewer")
+
+    secondary_bundle = tmp_path / "secondary"
+    review.export_secondary_bundle(primary_reviews, primary_bundle, secondary_bundle)
+    secondary_reviews = secondary_bundle / "secondary-review.csv"
+    _complete_clean_review_csv(secondary_reviews, "secondary-reviewer")
+    disagreements = tmp_path / "disagreements.json"
+    disagreement_result = review.export_secondary_disagreements(
+        primary_reviews,
+        secondary_reviews,
+        primary_bundle,
+        secondary_bundle,
+        disagreements,
+    )
+    assert disagreement_result["disagreement_items"] == 0
+
+    revealed = tmp_path / "revealed.jsonl"
+    reveal_result = review.reveal_grades(primary_reviews, primary_bundle, revealed)
+    assert reveal_result["reviewed_items"] == 60
+    assert reveal_result["grader_agreement_items"] == 60
+
+    freeze_path = tmp_path / "analysis-freeze.json"
+    freeze_path.write_bytes(canonical_json_bytes(freeze))
+    final = report.build_final_report(
+        freeze_path=freeze_path,
+        log_dir=tmp_path / "logs",
+        review_bundle_dir=primary_bundle,
+        primary_review_csv=primary_reviews,
+        secondary_bundle_dir=secondary_bundle,
+        secondary_review_csv=secondary_reviews,
+        revealed_reviews_path=revealed,
+        disagreements_path=disagreements,
+        adjudications_path=None,
+        decision="stop",
+        decision_note="Synthetic assembly check only; no model conclusion is claimed.",
+    )
+    markdown = report.final_markdown(final)
+
+    assert final["attempts"] == 60
+    assert final["analysis_eligible_attempts"] == 60
+    assert final["core_successes"] == 60
+    assert final["human_verdict_counts"] == {"correct": 60}
+    assert final["grader_agreement_counts"] == {"agree": 60}
+    assert final["primary_reviewed_runs"] == 60
+    assert final["secondary_reviewed_runs"] == 10
+    assert final["human_adjudicated_disagreements"] == 0
+    assert len(final["run_results"]) == 60
+    assert len(final["evidence_artifacts"]) == 11
+    assert final["report_sha256"] == content_sha256(
+        canonical_json_bytes({key: value for key, value in final.items() if key != "report_sha256"})
+    )
+    assert "# GovAgent-KR MVP Result" in markdown
+    assert "60" in markdown
