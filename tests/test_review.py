@@ -231,7 +231,7 @@ def test_export_requires_exactly_one_eval_log(
     key = tmp_path / "blind.key"
     key.write_bytes(b"k" * 32)
 
-    with pytest.raises(ReviewError, match="exactly one Inspect .eval log"):
+    with pytest.raises(ReviewError, match=r"exactly one Inspect \.eval log"):
         export_blind_bundle(tmp_path / "logs", tmp_path / "bundle", key)
 
 
