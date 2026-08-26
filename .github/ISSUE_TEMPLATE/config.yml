@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/boaz-hwang/govagent-kr/security/advisories/new
+    about: Report sandbox, credential, gold-leakage, and evidence-forgery issues privately.

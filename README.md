@@ -1,5 +1,14 @@
 # GovAgent-KR Temporal Citation Eval
 
+[![CI](https://github.com/boaz-hwang/govagent-kr/actions/workflows/ci.yml/badge.svg)](https://github.com/boaz-hwang/govagent-kr/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Status: experimental alpha](https://img.shields.io/badge/status-experimental%20alpha-orange.svg)](CHANGELOG.md)
+
+> [!WARNING]
+> 이 공개판은 **실험적 alpha 평가팩**이다. 코드·격리·재현성에 대한 공학 검증은
+> 통과했지만, 후보 gold의 법률 전문가 검수와 실제 frontier model 평가는 아직 완료되지
+> 않았다. 법률의견, 정부 인증 또는 공공기관 배치 적합성의 근거로 사용하면 안 된다.
+
 기준일에 맞는 한국 법령 연혁·조문·원문을 Agent가 고르는지 검증하는 작은 실행형
 평가 환경이다. 범위는 지방계약법 시행령 한 개, 5개 case family, 20개 item이다.
 
@@ -26,8 +35,9 @@ v0.1은 일반 설치형 wheel이 아니라 이 checkout에서 실행하는 Insp
 clone한 뒤 아래처럼 `uv sync`로 editable 환경을 만들며 PyPI 배포 대상으로 보지 않는다.
 
 ```bash
-cd gov-agent
-uv sync --extra dev --extra inspect --python 3.12
+git clone https://github.com/boaz-hwang/govagent-kr.git
+cd govagent-kr
+uv sync --frozen --extra dev --extra inspect --python 3.12
 uv run govagent-validate
 uv run govagent-diagnostics --output reports/diagnostics.json
 docker build --no-cache -t govagent-kr-sut:0.1.0 -f runtime/Dockerfile runtime
@@ -318,3 +328,18 @@ disagreement가 없으면 export한 adjudication template은 빈 파일이다. �
 disagreement가 하나라도 있으면 독립적인 제3 검토자의 grader-blind adjudication을 검증하기
 전에는 grade를 공개할 수 없다. review bundle의 private key와 identity map은 transcript
 검토자에게 공개하지 않고 접근 통제된 위치에 둔다.
+
+## 공개 개발과 릴리스
+
+- 버그와 재현 가능한 개선 제안은 GitHub Issues로 받는다.
+- 법령·gold 수정은 공식 출처와 재현 절차를 포함해야 하며, 검수된 gold는 2인 독립 검토와
+  adjudication 없이는 교체하지 않는다.
+- 보안 문제와 비밀정보 노출은 공개 issue 대신 GitHub의 private vulnerability reporting으로
+  신고한다.
+- `0.1.x`는 experimental alpha다. 검증된 benchmark 또는 stable 릴리스로 승격하려면
+  [DATASET_CARD.md](DATASET_CARD.md)의 SME 검수와 [pland.md](pland.md)의 frontier 실행·사람
+  transcript 검토가 실제 증거와 함께 완료돼야 한다.
+
+자세한 절차는 [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md),
+[RELEASING.md](RELEASING.md)를 참고한다. 코드와 프로젝트 작성 데이터는 Apache-2.0으로
+배포한다. 공식 법령 원문과 제3자 구성요소의 권리는 [NOTICE](NOTICE)에 별도로 설명한다.

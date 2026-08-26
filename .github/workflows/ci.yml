@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Static, unit, and replay checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra dev --extra inspect --python 3.12
+      - name: Validate fixtures and candidate dataset
+        run: uv run govagent-validate
+      - name: Run deterministic diagnostics
+        run: uv run govagent-diagnostics
+      - name: Lint
+        run: uv run ruff check .
+      - name: Check formatting
+        run: uv run ruff format --check .
+      - name: Run tests
+        run: uv run pytest -q
+
+  docker-smoke:
+    name: Docker and Agent Bridge smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra dev --extra inspect --python 3.12
+      - name: Inspect Docker environment
+        run: docker version && docker compose version
+      - name: Run isolated integration tests
+        env:
+          GOVAGENT_RUN_DOCKER_SMOKE: "1"
+        run: uv run pytest -q tests/test_inspect_integration.py

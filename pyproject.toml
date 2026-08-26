@@ -4,18 +4,31 @@ build-backend = "hatchling.build"
 
 [project]
 name = "govagent-kr-temporal-citation"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "A small, reproducible temporal-citation evaluation profile for Korean law agents"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-classifiers = ["Private :: Do Not Upload"]
+keywords = ["agent-evaluation", "korean-law", "temporal-retrieval", "inspect-ai"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   "lxml>=5.4,<7",
   "pydantic>=2.11,<3",
   "PyYAML>=6.0,<7",
 ]
+
+[project.urls]
+Homepage = "https://github.com/boaz-hwang/govagent-kr"
+Repository = "https://github.com/boaz-hwang/govagent-kr"
+Issues = "https://github.com/boaz-hwang/govagent-kr/issues"
+Changelog = "https://github.com/boaz-hwang/govagent-kr/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 inspect = [

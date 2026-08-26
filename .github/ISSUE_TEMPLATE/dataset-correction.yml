@@ -1,0 +1,44 @@
+name: Dataset or legal-source correction
+description: Propose a correction to a case, gold candidate, locator, or frozen source.
+title: "[Data]: "
+labels: [data, needs-review]
+body:
+  - type: input
+    id: item
+    attributes:
+      label: Item, history, or fixture ID
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior or annotation
+    validations:
+      required: true
+  - type: textarea
+    id: correction
+    attributes:
+      label: Proposed correction
+    validations:
+      required: true
+  - type: input
+    id: official_source
+    attributes:
+      label: Official source URL
+      description: Link directly to the relevant official legal text or amendment history.
+    validations:
+      required: true
+  - type: textarea
+    id: reasoning
+    attributes:
+      label: Effective-date and provision reasoning
+      description: Identify the controlling date, history ID, provision, supplementary provision, and why the current record is wrong.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Release boundary
+      options:
+        - label: I understand that an issue or pull request is not expert adjudication and cannot by itself mark gold as validated.
+          required: true

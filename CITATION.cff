@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use this experimental evaluation pack, cite this software release."
+title: "GovAgent-KR Temporal Citation Eval"
+abstract: >-
+  A small, reproducible evaluation environment for testing whether an AI agent
+  selects and exactly cites the Korean legal provision version effective at a
+  specified date.
+type: software
+version: 0.1.0-alpha.1
+date-released: 2026-08-26
+license: Apache-2.0
+repository-code: "https://github.com/boaz-hwang/govagent-kr"
+url: "https://github.com/boaz-hwang/govagent-kr"
+authors:
+  - name: "GovAgent-KR contributors"

@@ -1,0 +1,39 @@
+GovAgent-KR Temporal Citation Eval
+Copyright 2026 GovAgent-KR contributors
+
+The project-authored source code, synthetic cases, schemas, tests, and
+documentation are licensed under the Apache License 2.0 in LICENSE.
+
+Official Korean legal text
+--------------------------
+
+The frozen XML and normalized passages under fixtures/local-contract-decree/
+contain versions of the Korean Presidential Decree "Enforcement Decree of the
+Act on Contracts to Which a Local Government Is a Party" obtained from the
+Korean Ministry of Government Legislation's National Law Information Center.
+
+Source: Ministry of Government Legislation, National Law Information Center
+        https://www.law.go.kr/
+Open-data service: https://open.law.go.kr/
+Retrieved: 2026-08-25
+
+The snapshots are included on the basis that constitutions, statutes, treaties,
+orders, ordinances, and regulations are not protected works under Article 7 of
+the Korean Copyright Act, together with the source service's open-data policy.
+Their inclusion does not imply endorsement by the Ministry. Source attribution
+must be preserved, and the text must not be presented as altered official law.
+SHA-256 values establish byte identity only; users must consult the official
+source for legal authority and currentness.
+
+The public sample API identifier recorded in fixture manifests is not a private
+credential and is not proof of API-use approval. Anyone refreshing or extending
+the fixtures must obtain any approval required by the source service and must
+not commit personal API credentials.
+
+Third-party software
+--------------------
+
+This project depends on third-party packages listed in pyproject.toml, uv.lock,
+and runtime/requirements.lock. Those packages remain under their respective
+licenses. No claim is made that the Apache-2.0 license relicenses third-party
+software or official source material.
