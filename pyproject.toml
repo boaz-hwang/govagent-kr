@@ -33,7 +33,7 @@ Changelog = "https://github.com/boaz-hwang/govagent-kr/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 inspect = [
   "inspect-ai==0.3.260",
-  "openai==3.3.1",
+  "openai==3.19.2",
 ]
 dev = [
   "hypothesis>=6.135,<7",
